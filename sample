@@ -1,0 +1,200 @@
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.regex.*;
+import com.google.gson.*;
+
+public class AutosysJobParser {
+    
+    static class Job {
+        String name;
+        String type;
+        String command;
+        String machine;
+        List<String> dependencies = new ArrayList<>();
+        String condition;
+        String watchFile;
+        Map<String, String> attributes = new HashMap<>();
+        
+        public Job(String name) {
+            this.name = name;
+        }
+    }
+    
+    static class JobGraph {
+        List<Node> nodes = new ArrayList<>();
+        List<Edge> edges = new ArrayList<>();
+    }
+    
+    static class Node {
+        String id;
+        String type;
+        String command;
+        String machine;
+        String watchFile;
+        Map<String, String> attributes;
+        
+        public Node(Job job) {
+            this.id = job.name;
+            this.type = job.type;
+            this.command = job.command;
+            this.machine = job.machine;
+            this.watchFile = job.watchFile;
+            this.attributes = job.attributes;
+        }
+    }
+    
+    static class Edge {
+        String source;
+        String target;
+        String type;
+        
+        public Edge(String source, String target, String type) {
+            this.source = source;
+            this.target = target;
+            this.type = type;
+        }
+    }
+    
+    public static void main(String[] args) {
+        if (args.length < 1) {
+            System.out.println("Usage: java AutosysJobParser <input_file> [output_file] [--root <job_name>]");
+            System.out.println("Options:");
+            System.out.println("  --root <job_name>  Filter graph to include only the specified root job and its descendants");
+            return;
+        }
+        
+        String inputFile = args[0];
+        String outputFile = "job_graph.json";
+        String rootJob = null;
+        
+        // Parse command line arguments
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--root") && i + 1 < args.length) {
+                rootJob = args[i + 1];
+                i++;
+            } else if (!args[i].startsWith("--")) {
+                outputFile = args[i];
+            }
+        }
+        
+        try {
+            String content = new String(Files.readAllBytes(Paths.get(inputFile)));
+            List<Job> jobs = parseJobs(content);
+            JobGraph graph = buildGraph(jobs, rootJob);
+            String json = toJson(graph);
+            
+            Files.write(Paths.get(outputFile), json.getBytes());
+            System.out.println("Successfully parsed " + jobs.size() + " jobs");
+            if (rootJob != null) {
+                System.out.println("Filtered by root job: " + rootJob);
+            }
+            System.out.println("Jobs with connections: " + graph.nodes.size());
+            System.out.println("Jobs without connections (excluded): " + (jobs.size() - graph.nodes.size()));
+            System.out.println("Output written to: " + outputFile);
+        } catch (IOException e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    private static List<Job> parseJobs(String content) {
+        List<Job> jobs = new ArrayList<>();
+        String[] jobBlocks = content.split("(?=insert_job:|update_job:)");
+        
+        for (String block : jobBlocks) {
+            if (block.trim().isEmpty()) continue;
+            
+            Job job = parseJobBlock(block);
+            if (job != null) {
+                jobs.add(job);
+            }
+        }
+        
+        return jobs;
+    }
+    
+    private static Job parseJobBlock(String block) {
+        Pattern jobNamePattern = Pattern.compile("(?:insert_job|update_job):\\s*(\\S+)");
+        Matcher matcher = jobNamePattern.matcher(block);
+        
+        if (!matcher.find()) return null;
+        
+        Job job = new Job(matcher.group(1));
+        String[] lines = block.split("\n");
+        
+        for (String line : lines) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("/*") || line.startsWith("*/")) continue;
+            
+            if (line.startsWith("job_type:")) {
+                job.type = extractValue(line);
+            } else if (line.startsWith("command:")) {
+                job.command = extractValue(line);
+            } else if (line.startsWith("machine:")) {
+                job.machine = extractValue(line);
+            } else if (line.startsWith("condition:")) {
+                job.condition = extractValue(line);
+                job.dependencies = extractDependencies(job.condition);
+            } else if (line.startsWith("watch_file:")) {
+                job.watchFile = extractValue(line);
+            } else if (line.contains(":")) {
+                String[] parts = line.split(":", 2);
+                if (parts.length == 2) {
+                    job.attributes.put(parts[0].trim(), parts[1].trim());
+                }
+            }
+        }
+        
+        return job;
+    }
+    
+    private static String extractValue(String line) {
+        int colonIdx = line.indexOf(':');
+        if (colonIdx == -1) return "";
+        return line.substring(colonIdx + 1).trim();
+    }
+    
+    private static List<String> extractDependencies(String condition) {
+        List<String> deps = new ArrayList<>();
+        if (condition == null || condition.isEmpty()) return deps;
+        
+        // Match patterns like s(jobname), f(jobname), d(jobname), etc.
+        Pattern pattern = Pattern.compile("[sfd]\\(([^)]+)\\)");
+        Matcher matcher = pattern.matcher(condition);
+        
+        while (matcher.find()) {
+            deps.add(matcher.group(1));
+        }
+        
+        return deps;
+    }
+    
+    private static JobGraph buildGraph(List<Job> jobs) {
+        JobGraph graph = new JobGraph();
+        
+        // Create edges based on dependencies
+        Set<String> connectedNodes = new HashSet<>();
+        for (Job job : jobs) {
+            for (String dep : job.dependencies) {
+                graph.edges.add(new Edge(dep, job.name, "dependency"));
+                connectedNodes.add(dep);
+                connectedNodes.add(job.name);
+            }
+        }
+        
+        // Create nodes only for jobs that have edges (connections)
+        for (Job job : jobs) {
+            if (connectedNodes.contains(job.name)) {
+                graph.nodes.add(new Node(job));
+            }
+        }
+        
+        return graph;
+    }
+    
+    private static String toJson(JobGraph graph) {
+        Gson gson = new GsonBuilder().setPrettyPrinting().create();
+        return gson.toJson(graph);
+    }
+}
