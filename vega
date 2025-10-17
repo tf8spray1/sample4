@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Autosys Job Graph Visualization</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vega/5.22.1/vega.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vega-lite/5.6.0/vega-lite.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vega-embed/6.21.0/vega-embed.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 20px;
+        }
+        #controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #dataInput {
+            width: 100%;
+            height: 200px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            resize: vertical;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 10px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:active {
+            transform: translateY(1px);
+        }
+        .secondary {
+            background-color: #2196F3;
+        }
+        .secondary:hover {
+            background-color: #0b7dda;
+        }
+        #vis {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .info {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+            border-radius: 4px;
+            color: #2e7d32;
+        }
+        .error {
+            background-color: #ffebee;
+            border-left-color: #f44336;
+            color: #c62828;
+        }
+        .instructions {
+            color: #666;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Autosys Job Dependency Graph</h1>
+        <p class="subtitle">Tree Layout Visualization</p>
+        
+        <div id="controls">
+            <div class="instructions">
+                Paste your JSON data from the Java parser below:
+            </div>
+            <textarea id="dataInput" placeholder='Paste your JSON here, e.g.:
+{
+  "nodes": [
+    {"id": "job1", "type": "c", "command": "script.bat", "machine": "server1", ...},
+    {"id": "job2", "type": "c", "command": "process.sh", "machine": "server2", ...}
+  ],
+  "edges": [
+    {"source": "job1", "target": "job2", "type": "dependency"}
+  ]
+}'></textarea>
+            <div>
+                <button onclick="renderGraph()">Visualize Graph</button>
+                <button class="secondary" onclick="loadSampleData()">Load Sample Data</button>
+            </div>
+            <div id="info"></div>
+        </div>
+        
+        <div id="vis"></div>
+    </div>
+
+    <script>
+        // Sample data
+        const sampleData = {
+            "nodes": [
+                {"id": "file_watcher", "type": "f", "command": null, "machine": "linux_server1", "watchFile": "/data/input/trigger.txt"},
+                {"id": "extract_data", "type": "c", "command": "extract.bat", "machine": "win_server1", "watchFile": null},
+                {"id": "transform_data", "type": "c", "command": "transform.sh", "machine": "linux_server1", "watchFile": null},
+                {"id": "load_data", "type": "c", "command": "load.sh", "machine": "linux_server2", "watchFile": null},
+                {"id": "validate_data", "type": "c", "command": "validate.bat", "machine": "win_server2", "watchFile": null},
+                {"id": "archive_data", "type": "c", "command": "archive.sh", "machine": "linux_server1", "watchFile": null},
+                {"id": "send_report", "type": "c", "command": "report.bat", "machine": "win_server1", "watchFile": null}
+            ],
+            "edges": [
+                {"source": "file_watcher", "target": "extract_data", "type": "dependency"},
+                {"source": "extract_data", "target": "transform_data", "type": "dependency"},
+                {"source": "transform_data", "target": "load_data", "type": "dependency"},
+                {"source": "transform_data", "target": "validate_data", "type": "dependency"},
+                {"source": "load_data", "target": "archive_data", "type": "dependency"},
+                {"source": "validate_data", "target": "send_report", "type": "dependency"}
+            ]
+        };
+
+        function calculateTreeLayout(nodes, edges) {
+            const adjacency = new Map();
+            const inDegree = new Map();
+            
+            nodes.forEach(n => {
+                adjacency.set(n.id, []);
+                inDegree.set(n.id, 0);
+            });
+            
+            edges.forEach(e => {
+                adjacency.get(e.source).push(e.target);
+                inDegree.set(e.target, inDegree.get(e.target) + 1);
+            });
+            
+            const roots = nodes.filter(n => inDegree.get(n.id) === 0);
+            const levels = new Map();
+            const queue = [];
+            
+            roots.forEach(root => {
+                levels.set(root.id, 0);
+                queue.push(root.id);
+            });
+            
+            while (queue.length > 0) {
+                const current = queue.shift();
+                const currentLevel = levels.get(current);
+                
+                adjacency.get(current).forEach(child => {
+                    if (!levels.has(child) || levels.get(child) < currentLevel + 1) {
+                        levels.set(child, currentLevel + 1);
+                        queue.push(child);
+                    }
+                });
+            }
+            
+            const nodesByLevel = new Map();
+            nodes.forEach(n => {
+                const level = levels.get(n.id) || 0;
+                if (!nodesByLevel.has(level)) {
+                    nodesByLevel.set(level, []);
+                }
+                nodesByLevel.get(level).push(n);
+            });
+            
+            const levelHeight = 120;
+            const nodeSpacing = 150;
+            const startY = 50;
+            
+            const positioned = [];
+            nodesByLevel.forEach((levelNodes, level) => {
+                const totalWidth = levelNodes.length * nodeSpacing;
+                const startX = (800 - totalWidth) / 2 + nodeSpacing / 2;
+                
+                levelNodes.forEach((node, index) => {
+                    positioned.push({
+                        ...node,
+                        x: startX + index * nodeSpacing,
+                        y: startY + level * levelHeight,
+                        level: level
+                    });
+                });
+            });
+            
+            return positioned;
+        }
+
+        function createVegaSpec(data) {
+            const nodes = calculateTreeLayout(data.nodes, data.edges);
+            
+            const edges = data.edges.map(e => {
+                const source = nodes.find(n => n.id === e.source);
+                const target = nodes.find(n => n.id === e.target);
+                return {
+                    ...e,
+                    x: source.x,
+                    y: source.y,
+                    x2: target.x,
+                    y2: target.y
+                };
+            });
+
+            return {
+                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                "width": 1000,
+                "height": 700,
+                "background": "#fafafa",
+                "layer": [
+                    {
+                        "data": {"values": edges},
+                        "mark": {
+                            "type": "rule",
+                            "strokeWidth": 2,
+                            "opacity": 0.5
+                        },
+                        "encoding": {
+                            "x": {"field": "x", "type": "quantitative", "scale": {"domain": [0, 1000]}, "axis": null},
+                            "y": {"field": "y", "type": "quantitative", "scale": {"domain": [0, 700]}, "axis": null},
+                            "x2": {"field": "x2"},
+                            "y2": {"field": "y2"},
+                            "color": {"value": "#999"}
+                        }
+                    },
+                    {
+                        "data": {"values": edges},
+                        "mark": {
+                            "type": "point",
+                            "filled": true,
+                            "size": 50
+                        },
+                        "encoding": {
+                            "x": {"field": "x2", "type": "quantitative", "scale": {"domain": [0, 1000]}, "axis": null},
+                            "y": {"field": "y2", "type": "quantitative", "scale": {"domain": [0, 700]}, "axis": null},
+                            "color": {"value": "#666"},
+                            "shape": {"value": "triangle"}
+                        }
+                    },
+                    {
+                        "data": {"values": nodes},
+                        "mark": {
+                            "type": "circle",
+                            "size": 500,
+                            "stroke": "#333",
+                            "strokeWidth": 2
+                        },
+                        "encoding": {
+                            "x": {"field": "x", "type": "quantitative", "scale": {"domain": [0, 1000]}, "axis": null},
+                            "y": {"field": "y", "type": "quantitative", "scale": {"domain": [0, 700]}, "axis": null},
+                            "color": {
+                                "field": "type",
+                                "type": "nominal",
+                                "scale": {
+                                    "domain": ["c", "f", "b"],
+                                    "range": ["#4CAF50", "#2196F3", "#FF9800"]
+                                },
+                                "legend": {
+                                    "title": "Job Type",
+                                    "labelExpr": "datum.value === 'c' ? 'Command' : datum.value === 'f' ? 'File Watcher' : 'Box'"
+                                }
+                            },
+                            "tooltip": [
+                                {"field": "id", "type": "nominal", "title": "Job Name"},
+                                {"field": "type", "type": "nominal", "title": "Type"},
+                                {"field": "command", "type": "nominal", "title": "Command"},
+                                {"field": "machine", "type": "nominal", "title": "Machine"},
+                                {"field": "watchFile", "type": "nominal", "title": "Watch File"},
+                                {"field": "level", "type": "quantitative", "title": "Level"}
+                            ]
+                        }
+                    },
+                    {
+                        "data": {"values": nodes},
+                        "mark": {
+                            "type": "text",
+                            "dy": 30,
+                            "fontSize": 11,
+                            "fontWeight": "bold"
+                        },
+                        "encoding": {
+                            "x": {"field": "x", "type": "quantitative", "scale": {"domain": [0, 1000]}, "axis": null},
+                            "y": {"field": "y", "type": "quantitative", "scale": {"domain": [0, 700]}, "axis": null},
+                            "text": {"field": "id", "type": "nominal"},
+                            "color": {"value": "#333"}
+                        }
+                    }
+                ],
+                "config": {
+                    "view": {"stroke": null}
+                }
+            };
+        }
+
+        function showMessage(message, isError = false) {
+            const info = document.getElementById('info');
+            info.textContent = message;
+            info.className = isError ? 'info error' : 'info';
+        }
+
+        function renderGraph() {
+            const input = document.getElementById('dataInput').value.trim();
+            
+            if (!input) {
+                showMessage('Please paste your JSON data first!', true);
+                return;
+            }
+            
+            try {
+                const data = JSON.parse(input);
+                
+                if (!data.nodes || !data.edges) {
+                    showMessage('Invalid JSON format. Must contain "nodes" and "edges" arrays.', true);
+                    return;
+                }
+                
+                const spec = createVegaSpec(data);
+                vegaEmbed('#vis', spec, {
+                    actions: {
+                        export: true,
+                        source: false,
+                        editor: false
+                    }
+                }).then(result => {
+                    showMessage(`Successfully visualized ${data.nodes.length} jobs and ${data.edges.length} dependencies`);
+                }).catch(error => {
+                    console.error('Error rendering graph:', error);
+                    showMessage('Error rendering graph: ' + error.message, true);
+                });
+            } catch (error) {
+                showMessage('Invalid JSON format: ' + error.message, true);
+            }
+        }
+
+        function loadSampleData() {
+            document.getElementById('dataInput').value = JSON.stringify(sampleData, null, 2);
+            showMessage('Sample data loaded. Click "Visualize Graph" to render.');
+        }
+
+        // Load sample data on page load
+        window.onload = function() {
+            loadSampleData();
+            renderGraph();
+        };
+    </script>
+</body>
+</html>
